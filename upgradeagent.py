@@ -11,17 +11,17 @@ import traceback
 import re
 import time
 import asyncio
-import uuid
 import glob
 from src.logger import getLogger
 from fsatomic import atomicWrite
-from confluent_kafka import Producer, TopicPartition
+from confluent_kafka import TopicPartition
 from confluent_kafka.admin import AdminClient
 from utils import (
 	getDateTime, isIntervalElapsed, readFile, isFileExists, getLinuxDistro,
 	extractVersion, getLibrdkafkaVersion, calculateMD5, readVersionFile
 )
 from src.kafka_consumer import KafkaConsumer
+from src.kafka_producer import KafkaProducer
 # Remote debugging support
 import argparse
 
@@ -95,11 +95,7 @@ class UpgradeAgent:
 		self.kafkaAdminClient = None
 		self.consumer = None
 		self.producer = None
-		self.producerId = None
-		self.needsReload = False
 		self.isReloadingKafkaConnections = False
-		self.isClosingProducer = False
-		self.isClosingConsumer = False
 		self.isRestartingAgent = False
 		signal.signal(signal.SIGINT, self.handleSignal)
 		signal.signal(signal.SIGTERM, self.handleSignal)
@@ -247,23 +243,11 @@ class UpgradeAgent:
 		self.initConsumer()
 		self.initProducer()
 
-		self.needsReload = False
 		self.isReloadingKafkaConnections = False
 
 	def checkAndPerformReload(self):
-		if (self.needsReload or self.consumer.needsReload) and not self.isReloadingKafkaConnections:
+		if (self.consumer.needsReload or self.producer.needsReload) and not self.isReloadingKafkaConnections:
 			self.reloadKafkaConnections()
-
-	def isSSLRelatedError(self, err):
-		errorMessage = str(err)
-		return "SSL" in errorMessage or "certificate" in errorMessage
-
-	def onProducerError(self, err, producerId):
-		self.logger.debug(f"Kafka producer {producerId} error: {err}")
-
-		if self.isSSLRelatedError(err) and not self.isClosingProducer:
-			if producerId == self.producerId:
-				self.needsReload = True
 
 	def initConsumer(self):
 		conf = {
@@ -284,13 +268,9 @@ class UpgradeAgent:
 		self.consumer.assign(list(topicsPartitions))
 
 	def initProducer(self):
-		producerId = uuid.uuid4().hex[:8]
-		self.producerId = producerId
-
 		conf = {
 			'bootstrap.servers': ','.join(self.bootstrapServers),
 			'client.id': 'upgradeAgent_' + self.hostname,
-			'error_cb': lambda err: self.onProducerError(err, producerId),
 			'retries': 5
 		}
 
@@ -298,53 +278,19 @@ class UpgradeAgent:
 			ssl_conf = self.getKafkaSSLConfig()
 			conf.update(ssl_conf)
 
-		self.producer = Producer(conf)
-		self.logger.debug(f'Producer initialized. ID: {self.producerId}')
+		self.producer = KafkaProducer(conf, self.producerPollTimeout)
 
 	def produceMessageToTopic(self, message, topic):
-		def onProduce(err, msg):
-			if err:
-				self.logger.error(f'Produced message Failed! topic: {topic}, error: {err}')
-
 		try:
-			self.producer.produce(topic, value=json.dumps(message), callback=onProduce)
+			self.producer.produce(topic, message)
 			self.messageSequence += 1
-
 		except Exception as e:
-			self.logger.error(f'Failed to produce message to topic: {topic}, message: {message}, ex: {str(e)}')
 			self.exitGracefully()
 
 	async def produceMessageToTopicAwaitAck(self, message, topic):
-		loop = asyncio.get_running_loop()
-		future = loop.create_future()
-
-		def _deliveryCallback(err, msg):
-			if not future.done():
-				if err is not None:
-					future.set_exception(RuntimeError(f'Kafka delivery failed: {err}'))
-				else:
-					future.set_result(msg)
-					self.messageSequence += 1
-
-		try:
-			self.producer.produce(
-				topic,
-				value=json.dumps(message),
-				on_delivery=_deliveryCallback
-			)
-		except Exception as e:
-			self.logger.error(f'Failed to produce message to topic: {topic}, message: {message}, ex: {str(e)}')
-			raise e
-
-		try:
-			while not future.done():
-				self.producer.poll(self.producerPollTimeout)  # Poll for delivery events
-				await asyncio.sleep(self.producerPollTimeout)
-
-			return await future
-		except Exception as e:
-			self.logger.error(f'Failed to produce message to topic: {topic}, message: {message}, ex: {str(e)}')
-			raise e
+		result = await self.producer.produceAwaitAck(topic, message)
+		self.messageSequence += 1
+		return result
 
 	def getRPMVersions(self):
 		rpmVersions = []
@@ -376,15 +322,8 @@ class UpgradeAgent:
 
 	def closeProducer(self):
 		if self.producer:
-			self.logger.debug(f"Closing Kafka producer... ID: {self.producerId}")
-			self.isClosingProducer = True
-			try:
-				self.producer.flush(5)
-			except Exception as e:
-				self.logger.debug(f"Error flushing producer, ID: {self.producerId}, error: {e}")
-			finally:
-				self.producer = None
-				self.isClosingProducer = False
+			self.producer.close()
+			self.producer = None
 
 	def closeConsumer(self):
 		if self.consumer:
