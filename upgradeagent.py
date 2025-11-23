@@ -22,15 +22,6 @@ from utils import (
 )
 from src.kafka_consumer import KafkaConsumer
 from src.kafka_producer import KafkaProducer
-# Remote debugging support
-import argparse
-
-try:
-	import debugpy
-
-	DEBUGPY_AVAILABLE = True
-except ImportError:
-	DEBUGPY_AVAILABLE = False
 
 # Constants
 MANAGEMENT_TOPIC_NAME = 'default.management.priority.1.0.0'
@@ -179,8 +170,8 @@ class UpgradeAgent:
 		}
 
 		if self.isKafkaTLS:
-			ssl_conf = self.getKafkaSSLConfig()
-			conf.update(ssl_conf)
+			sslConfing = self.getKafkaSSLConfig()
+			conf.update(sslConfing)
 
 		self.kafkaAdminClient = AdminClient(conf)
 
@@ -258,8 +249,8 @@ class UpgradeAgent:
 		}
 
 		if self.isKafkaTLS:
-			ssl_conf = self.getKafkaSSLConfig()
-			conf.update(ssl_conf)
+			sslConfing = self.getKafkaSSLConfig()
+			conf.update(sslConfing)
 
 		self.consumer = KafkaConsumer(conf, self.consumerPollTimeout)
 
@@ -275,8 +266,8 @@ class UpgradeAgent:
 		}
 
 		if self.isKafkaTLS:
-			ssl_conf = self.getKafkaSSLConfig()
-			conf.update(ssl_conf)
+			sslConfing = self.getKafkaSSLConfig()
+			conf.update(sslConfing)
 
 		self.producer = KafkaProducer(conf, self.producerPollTimeout)
 
@@ -357,20 +348,20 @@ class UpgradeAgent:
 		if message is None:
 			return
 
-		message_value = self.consumer.decode(message)
+		messageValue = self.consumer.decode(message)
 
-		if message_value is None:
+		if messageValue is None:
 			return
 
 		kafkaCtx = self.consumer.getKafkaContext(message)
 
 		try:
-			await self.handleMessage(message_value, kafkaCtx)
+			await self.handleMessage(messageValue, kafkaCtx)
 		except Exception as e:
-			message_type = message_value.get('messageType')
+			messageType = messageValue.get('messageType')
 			self.logger.error(
 				f'Failed to handle message! topic: {message.topic()}, '
-				f'type: {message_type}, offset: {message.offset()}, exception: {e}, traceback: {traceback.format_exc()}')
+				f'type: {messageType}, offset: {message.offset()}, exception: {e}, traceback: {traceback.format_exc()}')
 			self.rewindConsumer(message)
 
 	def rewindConsumer(self, message):
@@ -795,80 +786,3 @@ class UpgradeAgent:
 			'stdErr': '',
 			'isError': False
 		}
-
-
-def setupRemoteDebugging(debug_host, debug_port, wait_for_client=False):
-	if not DEBUGPY_AVAILABLE:
-		print("❌ debugpy not available. Install with: pip install debugpy")
-		return False
-
-	try:
-		# Configure debugpy
-		debugpy.configure(subProcess=False)
-
-		# Listen for debugger connections
-		debugpy.listen((debug_host, debug_port))
-		print(f"🐛 Debug server started on {debug_host}:{debug_port}")
-		print(f"   Connect your debugger to {debug_host}:{debug_port}")
-
-		if wait_for_client:
-			print("⏳ Waiting for debugger to attach...")
-			debugpy.wait_for_client()
-			print("✅ Debugger attached!")
-		else:
-			print("🔄 Continuing without waiting for debugger")
-
-		return True
-
-	except Exception as e:
-		print(f"❌ Failed to setup remote debugging: {e}")
-		return False
-
-
-def parse_arguments():
-	"""Parse command line arguments"""
-	parser = argparse.ArgumentParser(
-		description='NVMesh Upgrade Agent with remote debugging support',
-		formatter_class=argparse.RawDescriptionHelpFormatter
-	)
-
-	parser.add_argument(
-		'--debug',
-		action='store_true',
-		help='Enable remote debugging with debugpy'
-	)
-
-	parser.add_argument(
-		'--wait-for-debugger',
-		action='store_true',
-		help='Wait for debugger to attach before starting agent'
-	)
-
-	return parser.parse_args()
-
-
-def main():
-	args = parse_arguments()
-
-	# Setup remote debugging if requested
-	if args.debug:
-		success = setupRemoteDebugging(
-			debug_host='0.0.0.0',
-			debug_port=5678,
-			wait_for_client=args.wait_for_debugger
-		)
-		if not success:
-			print("Continuing without debugging...")
-
-	# Start the upgrade agent
-	try:
-		upgradeAgent = UpgradeAgent()
-		asyncio.run(upgradeAgent.start())
-	except Exception as e:
-		import traceback
-		upgradeAgent.logger.error(f"Upgrade agent crashed: {e}")
-		traceback.print_exc()
-
-
-if __name__ == "__main__":
-	main()

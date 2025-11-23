@@ -55,14 +55,14 @@ class KafkaConsumer:
 
 	def decode(self, message):
 		try:
-			message_value = json.loads(message.value().decode('utf-8'))
+			messageValue = json.loads(message.value().decode('utf-8'))
 		except Exception as e:
 			self.logger.error(f'Failed to decode message! message value: {message.value()}, exception: {e}')
 			return None
 
-		self.logger.debug(f'Decoded message value: {message_value}')
+		self.logger.debug(f'Decoded message value: {messageValue}')
 
-		return message_value
+		return messageValue
 
 	def rewind(self, message):
 		self.logger.debug(f"Seeking back to offset {message.offset()} on partition {message.partition()} for replay")

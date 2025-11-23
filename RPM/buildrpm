@@ -1,7 +1,11 @@
 #!/bin/bash -x
 
 upgrade_agent_transfer_list="upgradeagent.conf \
+            main.py \
             upgradeagent.py \
+            utils.py \
+            fsatomic.py \
+            src \
             dist \
             systemd/nvmeshupgradeagent.service"
 

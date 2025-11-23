@@ -1,4 +1,4 @@
 tools:
   upgradeagent:
-    source: upgradeagent.py
+    source: src/main.py
     linkdir: /opt/nvmesh/upgradeagent

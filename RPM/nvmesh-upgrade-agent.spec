@@ -31,7 +31,11 @@ mkdir -pv %{buildroot}/opt/nvmesh/upgradeagent
 mkdir -pv %{buildroot}/lib/systemd/system
 mkdir -pv %{buildroot}/var/opt/nvmesh/upgradeagent
 
+cp -rf %{_builddir}/%{name}/main.py %{buildroot}/opt/nvmesh/upgradeagent/
 cp -rf %{_builddir}/%{name}/upgradeagent.py %{buildroot}/opt/nvmesh/upgradeagent/
+cp -rf %{_builddir}/%{name}/utils.py %{buildroot}/opt/nvmesh/upgradeagent/
+cp -rf %{_builddir}/%{name}/fsatomic.py %{buildroot}/opt/nvmesh/upgradeagent/
+cp -rf %{_builddir}/%{name}/src %{buildroot}/opt/nvmesh/upgradeagent/
 cp -rf %{_builddir}/%{name}/dist %{buildroot}/opt/nvmesh/upgradeagent/
 cp %{_builddir}/%{name}/upgradeagent.conf %{buildroot}/etc/nvmesh/
 cp -rf %{_builddir}/%{name}/systemd/nvmeshupgradeagent.service %{buildroot}/lib/systemd/system/
