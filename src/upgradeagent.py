@@ -12,16 +12,17 @@ import re
 import time
 import asyncio
 import glob
-from src.logger import getLogger
-from fsatomic import atomicWrite
+from logger import getLogger
 from confluent_kafka import TopicPartition
 from confluent_kafka.admin import AdminClient
+
 from utils import (
-	getDateTime, isIntervalElapsed, readFile, isFileExists, getLinuxDistro,
+	getDateTime, isIntervalElapsed, readFile, getLinuxDistro,
 	extractVersion, getLibrdkafkaVersion, calculateMD5, readVersionFile
 )
-from src.kafka_consumer import KafkaConsumer
-from src.kafka_producer import KafkaProducer
+from kafka_consumer import KafkaConsumer
+from kafka_producer import KafkaProducer
+from journal_manager import JournalManager
 
 # Constants
 MANAGEMENT_TOPIC_NAME = 'default.management.priority.1.0.0'
@@ -30,6 +31,7 @@ NVMESH_CONFIG_FILE_PATH = '/etc/nvmesh/nvmesh.conf'
 CONFIG_FILE_PATH = '/etc/nvmesh/upgradeagent.conf'
 VERSION_FILE_BASE_PATH = '/opt/nvmesh/upgradeagent/version'
 MIN_KEEPALIVE_INTERVAL = 5
+MAIN_LOOP_INTERVAL = 1
 
 # Journal
 JOURNAL_DIR = '/var/opt/nvmesh/upgradeagent'
@@ -51,19 +53,26 @@ class MessageTypes:
 	UPDATE_UPGRADE_AGENT_KEEPALIVE_TOKEN = 'updateUpgradeAgentKeepaliveToken'
 	UPGRADE_AGENT_COMMAND = 'upgradeAgentCommand'
 
+class SpecialCommands:
+	INSTALL = '<install>'
+	AGENT_RESTART = '<agent-restart>'
 
 class UpgradeAgent:
 	def __init__(self):
+		self.logger = getLogger('UpgradeAgent')
+		self.featureCompatibilityVersion = '1'
+		self.hostname = socket.gethostname()
+		self.config = {}
+		self.nvmeshConfig = None
+		self.upgradeAgentVersion = None
+		self.loadConfiguration()
+
 		self.archType = None
 		self.osID = None
 		self.osVersionID = None
 		self.osVersion = None
 		self.osDistribution = None
 		self.linuxDistro = None
-		self.logger = getLogger('UpgradeAgent')
-		self.config = readFile(CONFIG_FILE_PATH)
-		self.nvmeshConfig = readFile(NVMESH_CONFIG_FILE_PATH)
-		self.upgradeAgentVersion = readVersionFile(VERSION_FILE_BASE_PATH).get('version')
 		self.keepaliveInterval = self.config.get('DEFAULT_KEEPALIVE_INTERVAL', 5)
 		self.consumerPollTimeout = self.config.get('CONSUMER_POLL_TIMEOUT', 1.0)
 		self.producerPollTimeout = self.config.get('PRODUCER_POLL_TIMEOUT', 0.1)
@@ -72,14 +81,12 @@ class UpgradeAgent:
 		self.dataCollectionCheckInterval = self.config.get('DATA_COLLECTION_CHECK_INTERVAL', 5)
 
 		self.retrieveMachineInformation()
-		self.featureCompatibilityVersion = '1'
 		self.lastMessageMD5 = None
 		self.lastDataCollectionCheckTime = None
 		self.shouldContinue = True
 		self.isExecutingCommand = False
 		self.messageSequence = 0
 		self.lastKeepAliveTime = None
-		self.hostname = socket.gethostname()
 		self.additionalData = []
 		self.upgradeAgentToken = -1
 		self.bootstrapServers = self.getBootstrapServers()
@@ -91,33 +98,19 @@ class UpgradeAgent:
 		signal.signal(signal.SIGINT, self.handleSignal)
 		signal.signal(signal.SIGTERM, self.handleSignal)
 
-		self.loadJournal()
-
-	def loadJournal(self):
+		self.journalManager = JournalManager(JOURNAL_PATH)
 		try:
-			if isFileExists(JOURNAL_PATH):
-				with open(JOURNAL_PATH, 'r') as f:
-					self.journal = json.load(f)
-			else:
-				self.journal = {
-					'version': 1,
-					'currentToken': -1,
-					'commands': {}
-				}
+			self.journal = self.journalManager.loadJournal()
 		except Exception as e:
-			self.logger.error(f'Failed to load journal: {e}')
 			self.exitGracefully()
 
-	def saveJournal(self):
-		"""
-		Persist the journal atomically so that readers never see a partially-written file.
-		We serialize to bytes and use atomic_write which fsyncs data and the parent directory.
-		"""
+	def loadConfiguration(self):
 		try:
-			payload = json.dumps(self.journal, ensure_ascii=False).encode('utf-8')
-			atomicWrite(JOURNAL_PATH, payload)
+			self.config = readFile(CONFIG_FILE_PATH)
+			self.nvmeshConfig = readFile(NVMESH_CONFIG_FILE_PATH)
+			self.upgradeAgentVersion = readVersionFile(VERSION_FILE_BASE_PATH).get('version')
 		except Exception as e:
-			self.logger.error(f'Failed to save journal: {e}')
+			self.logger.error(f'Failed to load configuration: {e}')
 			self.exitGracefully()
 
 	def isRHELBased(self):
@@ -158,7 +151,7 @@ class UpgradeAgent:
 			if self.consumer and not self.isExecutingCommand:
 				await self.consume()
 			else:
-				await asyncio.sleep(self.consumerPollTimeout)
+				await asyncio.sleep(MAIN_LOOP_INTERVAL)
 
 			self.checkAndPerformReload()
 
@@ -472,9 +465,7 @@ class UpgradeAgent:
 		if not self.lastKeepAliveTime or (self.upgradeAgentToken >= 0 and isIntervalElapsed(self.lastKeepAliveTime, self.keepaliveInterval)):
 			self.sendKeepaliveMessage()
 		else:
-			if (not self.lastDataCollectionCheckTime or isIntervalElapsed(self.lastDataCollectionCheckTime,
-																		  self.dataCollectionCheckInterval)) and isIntervalElapsed(self.lastKeepAliveTime,
-																																   MIN_KEEPALIVE_INTERVAL):
+			if ((not self.lastDataCollectionCheckTime or isIntervalElapsed(self.lastDataCollectionCheckTime, self.dataCollectionCheckInterval)) and isIntervalElapsed(self.lastKeepAliveTime, MIN_KEEPALIVE_INTERVAL)):
 				data = self.collectData()
 				currentMessageMD5 = calculateMD5(data)
 				if currentMessageMD5 != self.lastMessageMD5:
@@ -485,23 +476,26 @@ class UpgradeAgent:
 				self.lastDataCollectionCheckTime = datetime.datetime.now()
 
 	def sendKeepaliveMessage(self, data=None):
+		basePayload = {
+			'featureCompatibilityVersion': self.featureCompatibilityVersion
+		}
 		try:
 			if data is None:
 				data = self.collectData()
 				self.lastMessageMD5 = calculateMD5(data)
 
 			payload = {
+				**basePayload,
 				'health': 'healthy',
 				**data
 			}
 		except Exception as e:
 			self.logger.error(f"Failed to collect data: {str(e)}")
 			payload = {
+				**basePayload,
 				'health': 'critical',
 				'healthError': str(e)
 			}
-		finally:
-			payload['featureCompatibilityVersion'] = self.featureCompatibilityVersion
 
 		message = self.buildMessage(messageType=MessageTypes.UPGRADE_AGENT_KEEPALIVE, payload=payload)
 
@@ -551,7 +545,7 @@ class UpgradeAgent:
 			entry.update(extra)
 
 		self.journal['commands'][upgradeStepID] = entry
-		self.saveJournal()
+		self.journalManager.saveJournal(self.journal)
 		return entry
 
 	async def handleReplay(self, upgradeStepID, entry, kafkaCtx):
@@ -603,9 +597,9 @@ class UpgradeAgent:
 			entry = self.setJournalState(upgradeStepID, JournalStates.STARTED, kafkaCtx, entry, {'command': commandObj})
 
 			# Execute the command
-			if command == '<install>':
+			if command == SpecialCommands.INSTALL:
 				commandRes = await self.handleInstallCommand(commandObj)
-			elif command == '<agent-restart>':
+			elif command == SpecialCommands.AGENT_RESTART:
 				commandRes = self.handleAgentRestartCommand()
 			else:
 				commandArgs = commandObj.get('args')
@@ -629,17 +623,11 @@ class UpgradeAgent:
 
 			# If the agent is restarting, we will produce the result after the agent is restarted.
 			if self.isRestartingAgent:
-				entry = self.setJournalState(upgradeStepID, JournalStates.RESULT_READY, kafkaCtx, entry, {'result': resultPayload})
+				self.setJournalState(upgradeStepID, JournalStates.RESULT_READY, kafkaCtx, entry, {'result': resultPayload})
 			else:
 				await self.produceResultAndFinalize(upgradeStepID, resultPayload, entry, kafkaCtx)
 		finally:
 			self.isExecutingCommand = False
-
-	def extractKafkaContext(self, entry):
-		topic = entry.get('topic')
-		partition = entry.get('partition')
-		offset = entry.get('offset')
-		return {'topic': topic, 'partition': partition, 'offset': offset}
 
 	# MGMT -> UPGRADE AGENT
 	async def handleMessage(self, message, kafkaCtx):
@@ -655,7 +643,7 @@ class UpgradeAgent:
 				self.upgradeAgentToken = token
 				# persist token
 				self.journal['currentToken'] = token
-				self.saveJournal()
+				self.journalManager.saveJournal(self.journal)
 
 			if messageType == MessageTypes.UPDATE_UPGRADE_AGENT_KEEPALIVE_TOKEN:
 				self.handleUpdateKeepaliveToken(payload)

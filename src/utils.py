@@ -14,18 +14,19 @@ def getDateTime():
 
 def isIntervalElapsed(previousActionTime, interval):
 	"""Check if specified interval has elapsed since previous action time."""
-	return (datetime.datetime.now() - previousActionTime).seconds > interval
+	return (datetime.datetime.now() - previousActionTime).total_seconds() > interval
 
 
 def readFile(filename):
 	"""Read and execute a Python configuration file, returning local variables."""
-	g = {}
-	l = {}
+	globals_dict = {}
+	locals_dict = {}
 
 	if os.path.exists(filename):
-		exec(open(filename).read(), g, l)
+		with open(filename) as f:
+			exec(f.read(), globals_dict, locals_dict)
 
-	return l
+	return locals_dict
 
 
 def isFileExists(path):

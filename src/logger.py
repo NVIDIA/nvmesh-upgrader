@@ -8,6 +8,7 @@ handler.setFormatter(formatter)
 
 def getLogger(name):
 	logger = logging.getLogger(name)
-	logger.addHandler(handler)
+	if not logger.handlers:
+		logger.addHandler(handler)
 	logger.setLevel(logging.DEBUG)
 	return logger

@@ -1,6 +1,6 @@
 import uuid
 import json
-from src.logger import getLogger
+from logger import getLogger
 from confluent_kafka import Consumer, TopicPartition
 
 
@@ -25,7 +25,7 @@ class KafkaConsumer:
 		return "SSL" in errorMessage or "certificate" in errorMessage
 
 	def onConsumerError(self, err, consumerId):
-		self.logger.debug(f"Consumer {consumerId} error: {err}")
+		self.logger.debug(f"Consumer error: {err}")
 
 		if self.isSSLRelatedError(err) and not self.isClosing:
 			if consumerId == self.consumerId:

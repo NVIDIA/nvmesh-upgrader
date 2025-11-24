@@ -4,7 +4,7 @@ import asyncio
 import argparse
 import traceback
 from upgradeagent import UpgradeAgent
-from src.logger import getLogger
+from logger import getLogger
 
 # Remote debugging support
 try:
@@ -80,8 +80,8 @@ def parse_arguments():
 	parser.add_argument(
 		'--debug-host',
 		type=str,
-		default='0.0.0.0',
-		help='Host address for debug server (default: 0.0.0.0)'
+		default='127.0.0.1',
+		help='Host address for debug server (default: 127.0.0.1, use 0.0.0.0 for all interfaces)'
 	)
 
 	parser.add_argument(

@@ -1,7 +1,7 @@
 import uuid
 import json
 import asyncio
-from src.logger import getLogger
+from logger import getLogger
 from confluent_kafka import Producer
 
 
