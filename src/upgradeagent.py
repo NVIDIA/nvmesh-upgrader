@@ -27,6 +27,7 @@ from journal_manager import JournalManager
 
 # Constants
 MANAGEMENT_TOPIC_NAME = 'default.management.priority.1.0.0'
+MANAGEMENT_KEEPALIVE_TOPIC_NAME = 'default.management.keepalive.1.0.0'
 UPGRADE_AGENT_TOPIC_SUFFIX = 'upgradeAgent.commands.1.0.0'
 NVMESH_CONFIG_FILE_PATH = '/etc/nvmesh/nvmesh.conf'
 CONFIG_FILE_PATH = '/etc/nvmesh/upgradeagent.conf'
@@ -64,6 +65,7 @@ class SpecialCommands:
 class UpgradeAgent:
 	def __init__(self):
 		self.logger = getLogger('UpgradeAgent')
+		self.componentType = 'UPGRADE_AGENT'
 		self.featureCompatibilityVersion = '1'
 		self.hostname = socket.gethostname()
 		self.config = {}
@@ -111,7 +113,7 @@ class UpgradeAgent:
 		self.journalManager = JournalManager(JOURNAL_PATH)
 		try:
 			self.journal = self.journalManager.loadJournal()
-		except Exception as e:
+		except Exception:
 			self.exitGracefully()
 
 	def loadConfiguration(self):
@@ -131,6 +133,7 @@ class UpgradeAgent:
 
 	def retrieveMachineInformation(self):
 		self.linuxDistro = getLinuxDistro()
+
 		if not self.linuxDistro.get('ID_LIKE') or not self.linuxDistro.get('PRETTY_NAME'):
 			self.logger.error('Failed to retrieve Linux distribution information')
 			sys.exit(1)
@@ -179,14 +182,17 @@ class UpgradeAgent:
 		self.kafkaAdminClient = AdminClient(conf)
 
 	def validateOutgoingTopicsExists(self):
+		topicsToValidate = [MANAGEMENT_TOPIC_NAME, MANAGEMENT_KEEPALIVE_TOPIC_NAME]
+
 		while self.shouldContinue:
 			try:
-				topics = self.kafkaAdminClient.list_topics(topic=MANAGEMENT_TOPIC_NAME, timeout=5).topics
-				if MANAGEMENT_TOPIC_NAME in topics:
-					self.logger.debug('Done validating outgoing topics!')
+				topics = self.kafkaAdminClient.list_topics(timeout=5).topics
+				if all(topic in topics for topic in topicsToValidate):
+					self.logger.debug(f'Done validating outgoing topics: {topicsToValidate}')
 					break
 
-				self.logger.debug(f'{MANAGEMENT_TOPIC_NAME} topic doesn\'t exist. Is the management running?')
+				missingTopics = [topic for topic in topicsToValidate if topic not in topics]
+				self.logger.debug(f'Outgoing topic(s): {missingTopics} don\'t exist. Is the management running?')
 				time.sleep(5)
 
 			except Exception as e:
@@ -324,15 +330,15 @@ class UpgradeAgent:
 
 		self.producer = KafkaProducer(conf, self.producerPollTimeout)
 
-	def produceMessageToTopic(self, message, topic):
+	def produceMessageToTopic(self, message, topic, key=None):
 		try:
-			self.producer.produce(topic, message)
+			self.producer.produce(topic, message, key)
 			self.messageSequence += 1
-		except Exception as e:
+		except Exception:
 			self.exitGracefully()
 
-	async def produceMessageToTopicAwaitAck(self, message, topic):
-		result = await self.producer.produceAwaitAck(topic, message)
+	async def produceMessageToTopicAwaitAck(self, message, topic, key=None):
+		result = await self.producer.produceAwaitAck(topic, message, key)
 		self.messageSequence += 1
 		return result
 
@@ -397,7 +403,7 @@ class UpgradeAgent:
 		self.logger.debug('Marking service to exit on next iteration...')
 		self.shouldContinue = False
 
-	def exitGracefully(self, signum=None, frame=None):
+	def exitGracefully(self):
 		self.logger.debug('Exiting gracefully...')
 		self.cleanup()
 		sys.exit(0)
@@ -427,7 +433,7 @@ class UpgradeAgent:
 	def rewindConsumer(self, message):
 		try:
 			self.consumer.rewind(message)
-		except Exception as e:
+		except Exception:
 			self.exitGracefully()
 
 	def getInterestConsumersConfig(self):
@@ -518,7 +524,7 @@ class UpgradeAgent:
 			'messageType': messageType,
 			'messageTypeVersion': messageTypeVersion,
 			'messageSequence': self.messageSequence,
-			'originType': 'UPGRADE_AGENT',
+			'originType': self.componentType,
 			'keepaliveInterval': self.keepaliveInterval,
 			'payload': payload
 		}
@@ -532,7 +538,9 @@ class UpgradeAgent:
 		if not self.lastKeepAliveTime or (self.upgradeAgentToken >= 0 and isIntervalElapsed(self.lastKeepAliveTime, self.keepaliveInterval)):
 			await self.sendKeepaliveMessage()
 		else:
-			if ((not self.lastDataCollectionCheckTime or isIntervalElapsed(self.lastDataCollectionCheckTime, self.dataCollectionCheckInterval)) and isIntervalElapsed(self.lastKeepAliveTime, MIN_KEEPALIVE_INTERVAL)):
+			if ((not self.lastDataCollectionCheckTime or isIntervalElapsed(self.lastDataCollectionCheckTime,
+																		   self.dataCollectionCheckInterval)) and isIntervalElapsed(self.lastKeepAliveTime,
+																																	MIN_KEEPALIVE_INTERVAL)):
 				data = self.collectData()
 				currentMessageMD5 = calculateMD5(data)
 				if currentMessageMD5 != self.lastMessageMD5:
@@ -565,10 +573,10 @@ class UpgradeAgent:
 			}
 
 		message = self.buildMessage(messageType=MessageTypes.UPGRADE_AGENT_KEEPALIVE, payload=payload)
-
+		key = f'{self.hostname}.{self.componentType}.{MessageTypes.UPGRADE_AGENT_KEEPALIVE}'
 		self.logger.debug(f'Going to send keepalive message, token: {message["upgradeAgentToken"]}, messageSequence: {message["messageSequence"]}')
 		try:
-			await self.produceMessageToTopicAwaitAck(message, MANAGEMENT_TOPIC_NAME)
+			await self.produceMessageToTopicAwaitAck(message, MANAGEMENT_KEEPALIVE_TOPIC_NAME, key)
 			self.lastKeepAliveTime = datetime.datetime.now()
 		except Exception as e:
 			self.logger.error(f"Failed to send keepalive message: {str(e)}")
@@ -767,7 +775,6 @@ class UpgradeAgent:
 				'isVerification': True
 			}
 			await self.produceResultAndFinalize(upgradeStepID, resultPayload, entry, kafkaCtx)
-			return
 
 	async def handleUpgradeAgentCommand(self, payload, kafkaCtx=None):
 		commandObj = payload.get('command')

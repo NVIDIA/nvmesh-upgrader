@@ -28,18 +28,18 @@ class KafkaProducer:
 			if producerId == self.producerId:
 				self.needsReload = True
 
-	def produce(self, topic, message):
+	def produce(self, topic, message, key=None):
 		def onProduce(err, msg):
 			if err:
 				self.logger.error(f'Produced message Failed! topic: {topic}, error: {err}')
 
 		try:
-			self.producer.produce(topic, value=json.dumps(message), callback=onProduce)
+			self.producer.produce(topic, value=json.dumps(message), key=key, callback=onProduce)
 		except Exception as e:
 			self.logger.error(f'Failed to produce message to topic: {topic}, message: {message}, ex: {str(e)}')
 			raise e
 
-	async def produceAwaitAck(self, topic, message):
+	async def produceAwaitAck(self, topic, message, key=None):
 		loop = asyncio.get_running_loop()
 		future = loop.create_future()
 
@@ -53,6 +53,7 @@ class KafkaProducer:
 		try:
 			self.producer.produce(
 				topic,
+				key=key,
 				value=json.dumps(message),
 				on_delivery=_deliveryCallback
 			)
