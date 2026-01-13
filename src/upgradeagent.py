@@ -12,6 +12,7 @@ import re
 import time
 import asyncio
 import glob
+import shutil
 from logger import getLogger
 from confluent_kafka import TopicPartition
 from confluent_kafka.admin import AdminClient
@@ -30,6 +31,7 @@ UPGRADE_AGENT_TOPIC_SUFFIX = 'upgradeAgent.commands.1.0.0'
 NVMESH_CONFIG_FILE_PATH = '/etc/nvmesh/nvmesh.conf'
 CONFIG_FILE_PATH = '/etc/nvmesh/upgradeagent.conf'
 VERSION_FILE_BASE_PATH = '/opt/nvmesh/upgradeagent/version'
+TLS_CERTS_DIR = '/var/run/nvmesh/tls/nvmeshupgradeagent'
 MIN_KEEPALIVE_INTERVAL = 5
 MAIN_LOOP_INTERVAL = 1
 
@@ -53,9 +55,11 @@ class MessageTypes:
 	UPDATE_UPGRADE_AGENT_KEEPALIVE_TOKEN = 'updateUpgradeAgentKeepaliveToken'
 	UPGRADE_AGENT_COMMAND = 'upgradeAgentCommand'
 
+
 class SpecialCommands:
 	INSTALL = '<install>'
 	AGENT_RESTART = '<agent-restart>'
+
 
 class UpgradeAgent:
 	def __init__(self):
@@ -94,9 +98,15 @@ class UpgradeAgent:
 		self.consumer = None
 		self.producer = None
 		self.isReloadingKafkaConnections = False
+		self.needsReload = False
 		self.isRestartingAgent = False
 		signal.signal(signal.SIGINT, self.handleSignal)
 		signal.signal(signal.SIGTERM, self.handleSignal)
+		signal.signal(signal.SIGHUP, self.handleSIGHUP)
+
+		# Copy TLS certificates to runtime directory if TLS is enabled
+		if self.isKafkaTLS:
+			self.copyCertificates()
 
 		self.journalManager = JournalManager(JOURNAL_PATH)
 		try:
@@ -181,10 +191,49 @@ class UpgradeAgent:
 
 			except Exception as e:
 				self.logger.error(f"Failed to validate outgoing topics: {e}")
-				self.logger.error(f"Reloading kafka admin client...")
+				self.logger.error("Reloading kafka admin client...")
 				self.kafkaAdminClient = None
 				time.sleep(5)
+
+				if self.isKafkaTLS:
+					self.copyCertificates()
 				self.initAdminClient()
+
+	def copyCertificates(self):
+		"""
+		Copy TLS certificates to runtime directory.
+		"""
+		certConfigKeys = ['KAFKA_SSL_CERTIFICATE', 'KAFKA_SSL_KEY', 'KAFKA_SSL_CA']
+
+		# Verify that the certificate files exist
+		for certConfigKey in certConfigKeys:
+			certFile = self.config.get(certConfigKey)
+			if not certFile:
+				self.logger.error(f'Config key {certConfigKey} is missing')
+				sys.exit(1)
+
+			if not os.path.exists(certFile):
+				self.logger.error(f'Certificate file {certFile} does not exist')
+				sys.exit(1)
+
+		# Copy certificates to runtime directory
+		try:
+			if not os.path.exists(TLS_CERTS_DIR):
+				self.logger.debug(f'Creating TLS certificates directory: {TLS_CERTS_DIR}')
+				os.makedirs(TLS_CERTS_DIR, mode=0o700, exist_ok=True)
+
+			srcCertFiles = list(map(lambda certConfigKey: self.config.get(certConfigKey), certConfigKeys))
+
+			for srcCertFile in srcCertFiles:
+				destCertFile = os.path.join(TLS_CERTS_DIR, os.path.basename(srcCertFile))
+				shutil.copy2(srcCertFile, destCertFile)
+				os.chmod(destCertFile, 0o600)
+
+			self.logger.debug(f'Successfully copied TLS certificates to TLS certificates directory {TLS_CERTS_DIR}')
+
+		except Exception as e:
+			self.logger.error(f'Failed to copy certificates: {e}')
+			raise
 
 	def getBootstrapServers(self):
 		bootstrapServersConfig = self.config.get('KAFKA_SERVERS') or self.nvmeshConfig.get('KAFKA_SERVERS')
@@ -203,12 +252,16 @@ class UpgradeAgent:
 		return bootstrapServers
 
 	def getKafkaSSLConfig(self):
+		kafkaSslCertFilePath = os.path.join(TLS_CERTS_DIR, os.path.basename(self.config.get('KAFKA_SSL_CERTIFICATE')))
+		kafkaSslKeyFilePath = os.path.join(TLS_CERTS_DIR, os.path.basename(self.config.get('KAFKA_SSL_KEY')))
+		kafkaSslCaFilePath = os.path.join(TLS_CERTS_DIR, os.path.basename(self.config.get('KAFKA_SSL_CA')))
+
 		sslConf = {
 			'security.protocol': 'SSL',
 			'enable.ssl.certificate.verification': 'true',
-			'ssl.certificate.location': self.config.get('KAFKA_SSL_CERTIFICATE'),
-			'ssl.key.location': self.config.get('KAFKA_SSL_KEY'),
-			'ssl.ca.location': self.config.get('KAFKA_SSL_CA'),
+			'ssl.certificate.location': kafkaSslCertFilePath,
+			'ssl.key.location': kafkaSslKeyFilePath,
+			'ssl.ca.location': kafkaSslCaFilePath,
 		}
 
 		# Add key password if specified
@@ -218,19 +271,25 @@ class UpgradeAgent:
 		return sslConf
 
 	def reloadKafkaConnections(self):
-		self.logger.debug(f"Reloading kafka connections...")
+		self.logger.debug("Reloading kafka connections...")
 		self.isReloadingKafkaConnections = True
 
 		self.closeConsumer()
 		self.closeProducer()
 
+		# Copy certificates on reload if TLS is enabled
+		if self.isKafkaTLS:
+			self.logger.debug("Reloading TLS certificates...")
+			self.copyCertificates()
+
 		self.initConsumer()
 		self.initProducer()
 
+		self.needsReload = False
 		self.isReloadingKafkaConnections = False
 
 	def checkAndPerformReload(self):
-		if (self.consumer.needsReload or self.producer.needsReload) and not self.isReloadingKafkaConnections:
+		if (self.needsReload or self.consumer.needsReload or self.producer.needsReload) and not self.isReloadingKafkaConnections:
 			self.reloadKafkaConnections()
 
 	def initConsumer(self):
@@ -325,6 +384,13 @@ class UpgradeAgent:
 	def handleSignal(self, signum, frame):
 		self.logger.debug(f'Received signal {signum}')
 		self.exitOnNextIteration()
+
+	def handleSIGHUP(self, signum, frame):
+		self.logger.debug('Received SIGHUP signal - reloading certificates and Kafka connections')
+		if not self.isReloadingKafkaConnections:
+			self.needsReload = True
+		else:
+			self.logger.warning("Reload already in progress, ignoring SIGHUP")
 
 	def exitOnNextIteration(self):
 		self.logger.debug('Marking service to exit on next iteration...')
@@ -469,7 +535,7 @@ class UpgradeAgent:
 				data = self.collectData()
 				currentMessageMD5 = calculateMD5(data)
 				if currentMessageMD5 != self.lastMessageMD5:
-					self.logger.debug(f'Detected data change, sending a new keepalive message with updated data')
+					self.logger.debug('Detected data change, sending a new keepalive message with updated data')
 					self.lastMessageMD5 = currentMessageMD5
 					self.sendKeepaliveMessage(data)
 

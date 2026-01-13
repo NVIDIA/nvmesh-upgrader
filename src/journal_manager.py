@@ -34,7 +34,7 @@ class JournalManager:
 					journal = json.load(f)
 				self.logger.debug(f'Journal loaded from {self.journalPath}')
 			else:
-				self.logger.debug(f'Journal file not found, creating new journal')
+				self.logger.debug('Journal file not found, creating new journal')
 				journal = {
 					'version': 1,
 					'currentToken': -1,

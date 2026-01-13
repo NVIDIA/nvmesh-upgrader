@@ -14,7 +14,7 @@ class KafkaConsumer:
 		self.consumerPollTimeout = consumerPollTimeout
 		self.config['error_cb'] = lambda err: self.onConsumerError(err, self.consumerId)
 		self.consumer = Consumer(self.config)
-		self.logger.debug(f'Consumer initialized')
+		self.logger.debug('Consumer initialized')
 
 	def assign(self, topics):
 		self.consumer.assign(topics)
@@ -85,7 +85,7 @@ class KafkaConsumer:
 
 		if self.consumer:
 			try:
-				self.logger.debug(f"Closing Consumer...")
+				self.logger.debug("Closing Consumer...")
 				self.consumer.close()
 			except Exception as e:
 				self.logger.debug(f"Error while closing consumer, error: {e}")

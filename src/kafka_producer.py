@@ -15,7 +15,7 @@ class KafkaProducer:
 		self.producerPollTimeout = producerPollTimeout
 		self.config['error_cb'] = lambda err: self.onProducerError(err, self.producerId)
 		self.producer = Producer(self.config)
-		self.logger.debug(f'Producer initialized')
+		self.logger.debug('Producer initialized')
 
 	def isSSLRelatedError(self, err):
 		errorMessage = str(err)
@@ -75,7 +75,7 @@ class KafkaProducer:
 
 		if self.producer:
 			try:
-				self.logger.debug(f"Closing Producer...")
+				self.logger.debug("Closing Producer...")
 				self.producer.flush(5)
 			except Exception as e:
 				self.logger.debug(f"Error flushing producer, error: {e}")
