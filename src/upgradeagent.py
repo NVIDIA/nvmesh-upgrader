@@ -157,7 +157,7 @@ class UpgradeAgent:
 
 		while self.shouldContinue:
 			if self.producer:
-				self.producePeriodicReports()
+				await self.producePeriodicReports()
 			if self.consumer and not self.isExecutingCommand:
 				await self.consume()
 			else:
@@ -314,7 +314,8 @@ class UpgradeAgent:
 		conf = {
 			'bootstrap.servers': ','.join(self.bootstrapServers),
 			'client.id': 'upgradeAgent_' + self.hostname,
-			'retries': 5
+			'retries': 5,
+			'message.timeout.ms': 60000
 		}
 
 		if self.isKafkaTLS:
@@ -527,9 +528,9 @@ class UpgradeAgent:
 		return message
 
 	# UPGRADE AGENT -> MGMT
-	def producePeriodicReports(self):
+	async def producePeriodicReports(self):
 		if not self.lastKeepAliveTime or (self.upgradeAgentToken >= 0 and isIntervalElapsed(self.lastKeepAliveTime, self.keepaliveInterval)):
-			self.sendKeepaliveMessage()
+			await self.sendKeepaliveMessage()
 		else:
 			if ((not self.lastDataCollectionCheckTime or isIntervalElapsed(self.lastDataCollectionCheckTime, self.dataCollectionCheckInterval)) and isIntervalElapsed(self.lastKeepAliveTime, MIN_KEEPALIVE_INTERVAL)):
 				data = self.collectData()
@@ -537,11 +538,11 @@ class UpgradeAgent:
 				if currentMessageMD5 != self.lastMessageMD5:
 					self.logger.debug('Detected data change, sending a new keepalive message with updated data')
 					self.lastMessageMD5 = currentMessageMD5
-					self.sendKeepaliveMessage(data)
+					await self.sendKeepaliveMessage(data)
 
 				self.lastDataCollectionCheckTime = datetime.datetime.now()
 
-	def sendKeepaliveMessage(self, data=None):
+	async def sendKeepaliveMessage(self, data=None):
 		basePayload = {
 			'featureCompatibilityVersion': self.featureCompatibilityVersion
 		}
@@ -566,8 +567,12 @@ class UpgradeAgent:
 		message = self.buildMessage(messageType=MessageTypes.UPGRADE_AGENT_KEEPALIVE, payload=payload)
 
 		self.logger.debug(f'Going to send keepalive message, token: {message["upgradeAgentToken"]}, messageSequence: {message["messageSequence"]}')
-		self.produceMessageToTopic(message, MANAGEMENT_TOPIC_NAME)
-		self.lastKeepAliveTime = datetime.datetime.now()
+		try:
+			await self.produceMessageToTopicAwaitAck(message, MANAGEMENT_TOPIC_NAME)
+			self.lastKeepAliveTime = datetime.datetime.now()
+		except Exception as e:
+			self.logger.error(f"Failed to send keepalive message: {str(e)}")
+
 
 	def getCommandResultMessage(self, resultData):
 		payload = {
@@ -712,7 +717,7 @@ class UpgradeAgent:
 				self.journalManager.saveJournal(self.journal)
 
 			if messageType == MessageTypes.UPDATE_UPGRADE_AGENT_KEEPALIVE_TOKEN:
-				self.handleUpdateKeepaliveToken(payload)
+				await self.handleUpdateKeepaliveToken(payload)
 				self.consumer.commitOffset(kafkaCtx)
 			elif messageType == MessageTypes.UPGRADE_AGENT_COMMAND:
 				# defer commit to the command handler (after produce ack)
@@ -720,7 +725,7 @@ class UpgradeAgent:
 			else:
 				self.logger.warning(f'Unable to handle message with messageType {messageType}. Ignoring this message...')
 
-	def handleUpdateKeepaliveToken(self, payload):
+	async def handleUpdateKeepaliveToken(self, payload):
 		keepaliveInterval = payload.get('keepaliveInterval')
 		token = payload.get('upgradeAgentToken')
 		additionalData = payload.get('additionalData')
@@ -737,7 +742,7 @@ class UpgradeAgent:
 			self.additionalData = additionalData
 
 		self.updateKeepAliveIntervalIfNeeded(keepaliveInterval)
-		self.sendKeepaliveMessage()
+		await self.sendKeepaliveMessage()
 
 	async def handleVerificationCommand(self, verificationCommand, upgradeStepID, entry, kafkaCtx):
 		cmdRes = self.runCommand(verificationCommand)
