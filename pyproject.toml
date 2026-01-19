@@ -7,7 +7,7 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.8,<3.13"
-confluent-kafka = "2.1.1"
+confluent-kafka = "2.6.0"
 pyyaml = "^6.0.2"
 
 [tool.poetry.group.compile]
