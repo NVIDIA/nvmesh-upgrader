@@ -1,6 +1,11 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # NVMesh Upgrade Agent
 
-The NVMesh Upgrade Agent is a service component of Excelero NVMesh that handles system upgrades and maintenance operations through Kafka messaging. It provides a reliable way to manage and execute upgrade commands across NVMesh nodes.
+The NVMesh Upgrade Agent is a service component of NVMesh that handles system upgrades and maintenance operations through Kafka messaging. It provides a reliable way to manage and execute upgrade commands across NVMesh nodes.
 
 ## Configuration
 
