@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=NVMesh(r) Service
+After=network.target
+
+[Service]
+ExecStart=/opt/nvmesh/upgradeagent/dist/upgradeagent
+SyslogIdentifier=upgradeagent
+Restart=on-failure
+RestartSec=5s
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
