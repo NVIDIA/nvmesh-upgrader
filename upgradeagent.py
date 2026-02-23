@@ -603,7 +603,7 @@ class UpgradeAgent:
             timeout=timeout
         )
 
-    async def runUpgradeAgentCommand(self, cmd, args=None, timeout=None):
+    async def runUpgradeAgentCommand(self, cmd, args=None, timeout=None, env=None):
         if args is None:
             args = []
 
@@ -613,7 +613,8 @@ class UpgradeAgent:
                 cmd,
                 *args,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                env=env
             )
 
             try:
@@ -809,7 +810,7 @@ class UpgradeAgent:
             else:
                 commandArgs = commandObj.get('args')
                 commandTimeout = commandObj.get('timeout')
-                commandRes = await self.runUpgradeAgentCommand(command, commandArgs, commandTimeout)
+                commandRes = await self.runUpgradeAgentCommand(command, args=commandArgs, timeout=commandTimeout)
 
             # Process the result
             isTimeout = commandRes.get('isTimeout')
@@ -956,10 +957,11 @@ class UpgradeAgent:
 
         if self.isRHELBased():
             self.logger.debug(f'Executing RPM install for files: {", ".join(resolvedFiles)}')
-            return await self.runUpgradeAgentCommand('dnf', ['install', '-y', *resolvedFiles], commandTimeout)
+            return await self.runUpgradeAgentCommand('dnf', args=['install', '-y', *resolvedFiles], timeout=commandTimeout)
         elif self.isUbuntuBased():
             self.logger.debug(f'Executing APT install for files: {", ".join(resolvedFiles)}')
-            return await self.runUpgradeAgentCommand('apt-get', ['install', '-y', *resolvedFiles], commandTimeout)
+            apt_env = {**os.environ, 'DEBIAN_FRONTEND': 'noninteractive'}
+            return await self.runUpgradeAgentCommand('apt-get', args=['install', '-y', '-o', 'Dpkg::Options::=--force-confold', *resolvedFiles], timeout=commandTimeout, env=apt_env)
 
     def handleAgentRestartCommand(self):
         self.logger.debug('Received agent restart command, sending systemctl restart command to systemd to restart the service...')
