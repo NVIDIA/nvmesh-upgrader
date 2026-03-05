@@ -44,8 +44,8 @@ sudo journalctl -u nvmeshupgradeagent
 
 ## NVMesh Open Source Repositories List
 * https://github.com/NVIDIA/nvmesh-documentation
-* https://github.com/NVIDIA/nvmesh-interop-db
 * https://github.com/NVIDIA/nvmesh-infra
+* https://github.com/NVIDIA/nvmesh-interop-db
 * https://github.com/NVIDIA/nvmesh-kernel
 * https://github.com/NVIDIA/nvmesh-management
 * https://github.com/NVIDIA/nvmesh-upgrader
