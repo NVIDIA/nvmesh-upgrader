@@ -11,6 +11,7 @@ SyslogIdentifier=upgradeagent
 Restart=on-failure
 RestartSec=5s
 Environment=PYTHONUNBUFFERED=1
+Environment=TMPDIR=/var/opt/nvmesh/upgradeagent/tmp
 
 [Install]
 WantedBy=multi-user.target

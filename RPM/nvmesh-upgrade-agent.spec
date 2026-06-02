@@ -29,7 +29,7 @@ cp -rf %{_sourcedir}/%{name} %{_builddir}/
 mkdir -pv %{buildroot}/etc/nvmesh
 mkdir -pv %{buildroot}/opt/nvmesh/upgradeagent
 mkdir -pv %{buildroot}/lib/systemd/system
-mkdir -pv %{buildroot}/var/opt/nvmesh/upgradeagent
+mkdir -pv %{buildroot}/var/opt/nvmesh/upgradeagent/tmp
 
 cp -rf %{_builddir}/%{name}/dist %{buildroot}/opt/nvmesh/upgradeagent/
 cp %{_builddir}/%{name}/upgradeagent.conf %{buildroot}/etc/nvmesh/
