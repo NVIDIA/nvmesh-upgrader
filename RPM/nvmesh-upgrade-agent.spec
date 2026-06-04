@@ -34,6 +34,7 @@ mkdir -pv %{buildroot}/var/opt/nvmesh/upgradeagent/tmp
 cp -rf %{_builddir}/%{name}/dist %{buildroot}/opt/nvmesh/upgradeagent/
 cp %{_builddir}/%{name}/upgradeagent.conf %{buildroot}/etc/nvmesh/
 cp -rf %{_builddir}/%{name}/systemd/nvmeshupgradeagent.service %{buildroot}/lib/systemd/system/
+install -D -m 0755 %{_builddir}/%{name}/RPM/uninstall %{buildroot}/opt/nvmesh/upgradeagent/scripts-%{version}-%{release}/uninstall
 
 echo "version=\"%{version}-%{release}\"" > %{buildroot}/opt/nvmesh/upgradeagent/version
 echo "commit=\"%{commit_id}\"" >> %{buildroot}/opt/nvmesh/upgradeagent/version
@@ -43,11 +44,7 @@ echo "branch=\"%{branch}\"" >> %{buildroot}/opt/nvmesh/upgradeagent/version
 systemctl enable nvmeshupgradeagent > /dev/null 2>&1
 
 %preun
-# not an upgrade
-if [ "$1" = "0" ]; then
-    systemctl stop nvmeshupgradeagent > /dev/null 2>&1
-    systemctl disable nvmeshupgradeagent > /dev/null 2>&1
-fi
+/opt/nvmesh/upgradeagent/scripts-%{version}-%{release}/uninstall "$1"
 
 %files
 /opt/nvmesh/upgradeagent

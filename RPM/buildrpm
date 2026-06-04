@@ -5,7 +5,8 @@
 
 upgrade_agent_transfer_list="upgradeagent.conf \
             dist \
-            systemd/nvmeshupgradeagent.service"
+            systemd/nvmeshupgradeagent.service \
+            RPM/uninstall"
 
 print_help() {
     cat <<EOF
