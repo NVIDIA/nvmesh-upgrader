@@ -206,13 +206,11 @@ if [ -z $distTag ]; then
         fi
     else
         #not rhel related os - ubuntu or other
-        os_release_content=$(cat /etc/os-release)
-        if [[ "$os_release_content" =~ VERSION_ID=\"([^\"]*) ]]; then
-            os_version_id=${BASH_REMATCH[1]}
+        os_version_id=$(grep -oP '^VERSION_ID="*\K[^"]*' /etc/os-release)
+        if [ -n "$os_version_id" ]; then
             short_version_id=$(echo $os_version_id | tr -d .)
-
-            if [[ "$os_release_content" =~ NAME=\"([^\"]*) ]]; then
-                os_name=${BASH_REMATCH[1]}
+            os_name=$(grep -oP '^NAME="*\K[^."]*' /etc/os-release)
+            if [ -n "$os_name" ]; then
                 # convert to lower case
                 lower_os_name=$(echo "$os_name" | awk '{print tolower($0)}')
                 # remove spaces
