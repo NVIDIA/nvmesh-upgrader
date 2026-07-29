@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
 
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 import os
 import signal
 import socket
@@ -18,7 +15,6 @@ import asyncio
 import uuid
 import glob
 from fsatomic import atomicWrite
-import shutil
 from confluent_kafka import Producer, Consumer, TopicPartition
 from confluent_kafka.admin import AdminClient
 from utils import (
@@ -40,7 +36,6 @@ UPGRADE_AGENT_TOPIC_SUFFIX = 'upgradeAgent.commands.1.0.0'
 NVMESH_CONFIG_FILE_PATH = '/etc/nvmesh/nvmesh.conf'
 CONFIG_FILE_PATH = '/etc/nvmesh/upgradeagent.conf'
 VERSION_FILE_BASE_PATH = '/opt/nvmesh/upgradeagent/version'
-TLS_CERTS_DIR = '/var/run/nvmesh/tls/nvmeshupgradeagent'
 MIN_KEEPALIVE_INTERVAL = 5
 
 # Journal
@@ -107,11 +102,6 @@ class UpgradeAgent:
         self.isRestartingAgent = False
         signal.signal(signal.SIGINT, self.handleSignal)
         signal.signal(signal.SIGTERM, self.handleSignal)
-        signal.signal(signal.SIGHUP, self.handleSIGHUP)
-
-        # Copy TLS certificates to runtime directory if TLS is enabled
-        if self.isKafkaTLS:
-            self.copyCertificates()
 
         self.loadJournal()
 
@@ -233,9 +223,6 @@ class UpgradeAgent:
                 self.logger.error(f"Reloading kafka admin client...")
                 self.kafkaAdminClient = None
                 time.sleep(5)
-
-                if self.isKafkaTLS:
-                    self.copyCertificates()
                 self.initAdminClient()
 
     def getBootstrapServers(self):
@@ -254,53 +241,13 @@ class UpgradeAgent:
         self.logger.debug(f'Kafka bootstrap servers: {bootstrapServers}')
         return bootstrapServers
 
-    def copyCertificates(self):
-        """
-        Copy TLS certificates to runtime directory.
-        """
-        certConfigKeys = ['KAFKA_SSL_CERTIFICATE', 'KAFKA_SSL_KEY', 'KAFKA_SSL_CA']
-
-        # Verify that the certificate files exist
-        for certConfigKey in certConfigKeys:
-            certFile = self.config.get(certConfigKey)
-            if not certFile:
-                self.logger.error(f'Config key {certConfigKey} is missing')
-                sys.exit(1)
-
-            if not os.path.exists(certFile):
-                self.logger.error(f'Certificate file {certFile} does not exist')
-                sys.exit(1)
-
-        # Copy certificates to runtime directory
-        try:
-            if not os.path.exists(TLS_CERTS_DIR):
-                self.logger.debug(f'Creating TLS certificates directory: {TLS_CERTS_DIR}')
-                os.makedirs(TLS_CERTS_DIR, mode=0o700, exist_ok=True)
-
-            srcCertFiles = list(map(lambda certConfigKey: self.config.get(certConfigKey), certConfigKeys))
-
-            for srcCertFile in srcCertFiles:
-                destCertFile = os.path.join(TLS_CERTS_DIR, os.path.basename(srcCertFile))
-                shutil.copy2(srcCertFile, destCertFile)
-                os.chmod(destCertFile, 0o600)
-
-            self.logger.debug(f'Successfully copied TLS certificates to TLS certificates directory {TLS_CERTS_DIR}')
-
-        except Exception as e:
-            self.logger.error(f'Failed to copy certificates: {e}')
-            raise
-
     def getKafkaSSLConfig(self):
-        kafkaSslCertFilePath = os.path.join(TLS_CERTS_DIR, os.path.basename(self.config.get('KAFKA_SSL_CERTIFICATE')))
-        kafkaSslKeyFilePath = os.path.join(TLS_CERTS_DIR, os.path.basename(self.config.get('KAFKA_SSL_KEY')))
-        kafkaSslCaFilePath = os.path.join(TLS_CERTS_DIR, os.path.basename(self.config.get('KAFKA_SSL_CA')))
-
         sslConf = {
             'security.protocol': 'SSL',
             'enable.ssl.certificate.verification': 'true',
-            'ssl.certificate.location': kafkaSslCertFilePath,
-            'ssl.key.location': kafkaSslKeyFilePath,
-            'ssl.ca.location': kafkaSslCaFilePath,
+            'ssl.certificate.location': self.config.get('KAFKA_SSL_CERTIFICATE'),
+            'ssl.key.location': self.config.get('KAFKA_SSL_KEY'),
+            'ssl.ca.location': self.config.get('KAFKA_SSL_CA'),
         }
 
         # Add key password if specified
@@ -315,11 +262,6 @@ class UpgradeAgent:
 
         self.closeConsumer()
         self.closeProducer()
-
-        # Copy certificates on reload if TLS is enabled
-        if self.isKafkaTLS:
-            self.logger.debug("Reloading TLS certificates...")
-            self.copyCertificates()
 
         self.initConsumer()
         self.initProducer()
@@ -514,13 +456,6 @@ class UpgradeAgent:
         self.cleanup()
         sys.exit(0)
 
-    def handleSIGHUP(self, signum, frame):
-        self.logger.debug(f'Received SIGHUP signal - reloading certificates and Kafka connections')
-        if not self.isReloadingKafkaConnections:
-            self.needsReload = True
-        else:
-            self.logger.warning("Reload already in progress, ignoring SIGHUP")
-
     async def consume(self):
         message = self.consumer.poll(timeout=self.consumerPollTimeout)
 
@@ -603,7 +538,7 @@ class UpgradeAgent:
             timeout=timeout
         )
 
-    async def runUpgradeAgentCommand(self, cmd, args=None, timeout=None, env=None):
+    async def runUpgradeAgentCommand(self, cmd, args=None, timeout=None):
         if args is None:
             args = []
 
@@ -613,8 +548,7 @@ class UpgradeAgent:
                 cmd,
                 *args,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
+                stderr=asyncio.subprocess.PIPE
             )
 
             try:
@@ -666,9 +600,7 @@ class UpgradeAgent:
         if not self.lastKeepAliveTime or (self.upgradeAgentToken >= 0 and isIntervalElapsed(self.lastKeepAliveTime, self.keepaliveInterval)):
             self.sendKeepaliveMessage()
         else:
-            if (not self.lastDataCollectionCheckTime or isIntervalElapsed(self.lastDataCollectionCheckTime,
-                                                                          self.dataCollectionCheckInterval)) and isIntervalElapsed(self.lastKeepAliveTime,
-                                                                                                                                   MIN_KEEPALIVE_INTERVAL):
+            if (not self.lastDataCollectionCheckTime or isIntervalElapsed(self.lastDataCollectionCheckTime, self.dataCollectionCheckInterval)) and isIntervalElapsed(self.lastKeepAliveTime, MIN_KEEPALIVE_INTERVAL):
                 data = self.collectData()
                 currentMessageMD5 = calculateMD5(data)
                 if currentMessageMD5 != self.lastMessageMD5:
@@ -810,7 +742,7 @@ class UpgradeAgent:
             else:
                 commandArgs = commandObj.get('args')
                 commandTimeout = commandObj.get('timeout')
-                commandRes = await self.runUpgradeAgentCommand(command, args=commandArgs, timeout=commandTimeout)
+                commandRes = await self.runUpgradeAgentCommand(command, commandArgs, commandTimeout)
 
             # Process the result
             isTimeout = commandRes.get('isTimeout')
@@ -957,11 +889,10 @@ class UpgradeAgent:
 
         if self.isRHELBased():
             self.logger.debug(f'Executing RPM install for files: {", ".join(resolvedFiles)}')
-            return await self.runUpgradeAgentCommand('dnf', args=['install', '-y', *resolvedFiles], timeout=commandTimeout)
+            return await self.runUpgradeAgentCommand('dnf', ['install', '-y', *resolvedFiles], commandTimeout)
         elif self.isUbuntuBased():
             self.logger.debug(f'Executing APT install for files: {", ".join(resolvedFiles)}')
-            apt_env = {**os.environ, 'DEBIAN_FRONTEND': 'noninteractive'}
-            return await self.runUpgradeAgentCommand('apt-get', args=['install', '-y', '-o', 'Dpkg::Options::=--force-confold', *resolvedFiles], timeout=commandTimeout, env=apt_env)
+            return await self.runUpgradeAgentCommand('apt-get', ['install', '-y', *resolvedFiles], commandTimeout)
 
     def handleAgentRestartCommand(self):
         self.logger.debug('Received agent restart command, sending systemctl restart command to systemd to restart the service...')
