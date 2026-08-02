@@ -1,0 +1,34 @@
+version: "1.0"
+project: "nvmesh-upgrade-agent"
+last_updated: "2026-07-21T13:00:00Z"
+
+repository_exposure_classification:
+  visibility: "Public"
+  basis: "Apache-2.0 LICENSE and README lists a public NVIDIA GitHub mirror for this project; document written to public-safe detail"
+  confirmed_by: "batch-run"
+  date: "2026-07-21"
+
+service_exposure_classification:
+  tier: "External / Regulated"
+  confidence: "high"
+  basis: "externally distributed, commercially supported enterprise storage product component; shipped to customers as RPM/DEB packages and container images; runs as a privileged system service performing package installation and remote command execution"
+  confirmed_by: "batch-run"
+  date: "2026-07-21"
+
+false_positives: []
+
+accepted_risks:
+  - slug: "threat-remote-command-execution-via-kafka-command-messages"
+    threat: "Remote command execution via Kafka command messages: handleUpgradeAgentCommand -> handleAgentCommand -> runUpgradeAgentCommand in src/upgradeagent.py execute cmd/args/timeout from the upgradeAgentCommand payload"
+    severity: "high"
+    reason: "Remote command execution over Kafka is the agent's intended function by design; the design was reviewed and approved by security. Mitigated operationally by restricting Kafka command-topic access and enabling mutual TLS to the broker."
+    triaged_by: "Ido Yehiam"
+    date: "2026-07-21"
+  - slug: "threat-shell-injection-via-verification-commands"
+    threat: "Shell injection via verification commands: handleVerificationCommand passes the message-supplied verificationCommand into runCommand, which invokes subprocess.run(pipeline, shell=True, executable=/bin/bash)"
+    severity: "high"
+    reason: "Verification commands are supplied by the trusted management server over the same approved Kafka control channel as upgrade commands; part of the reviewed and security-approved design. Mitigated operationally by restricting Kafka command-topic access and enabling mutual TLS to the broker."
+    triaged_by: "Ido Yehiam"
+    date: "2026-07-21"
+
+suppressed_cves: []
